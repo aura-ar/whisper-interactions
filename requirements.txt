@@ -1,0 +1,8 @@
+python-dotenv
+livekit-agents
+livekit-plugins-silero
+livekit-plugins-openai
+livekit-plugins-elevenlabs
+faster-whisper
+numpy
+soundfile
