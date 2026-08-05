@@ -8,7 +8,7 @@ This project demonstrates a local real-time voice assistant using LiveKit.
 * Browser microphone input through LiveKit Agents Playground
 * Python LiveKit agent
 * Local Whisper STT using faster-whisper
-* Local LLM response generation using Ollama
+* Local LLM response generation using LMStudio
 * Optional TTS support using external TTS providers
 
 ## Pipeline
@@ -17,7 +17,7 @@ This project demonstrates a local real-time voice assistant using LiveKit.
 User Speech
 → LiveKit Audio Stream
 → Whisper Speech-to-Text
-→ Ollama Local LLM
+→ LMStudio Local LLM
 → AI Text Response
 ```
 
@@ -39,13 +39,17 @@ cd D:\livekit
 .\livekit-server.exe --dev
 ```
 
-### 2. Start Ollama
+### 2. Start LMStudio
 
-```powershell
-ollama serve
+Start LMStudio and enable the OpenAI-compatible API endpoint on your local machine.
+
+Typical LMStudio API endpoint:
+
+```text
+http://localhost:8080/api/v1
 ```
 
-If Ollama is already running, this may show `address already in use`.
+If LMStudio is already running, make sure the host and port are not in use by another service.
 
 ### 3. Start LiveKit Agent
 
@@ -72,7 +76,7 @@ Click **Connect**, allow microphone permission, and speak.
 
 ## Demo Output
 
-The system receives microphone audio from the browser, transcribes it using Whisper, and sends the transcript to the local Ollama LLM for response generation.
+The system receives microphone audio from the browser, transcribes it using Whisper, and sends the transcript to the local LMStudio LLM for response generation.
 
 ## Note
 

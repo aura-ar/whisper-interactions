@@ -1,6 +1,3 @@
-import os
-from dotenv import load_dotenv
-
 from livekit.agents import (
     Agent,
     AgentSession,
@@ -16,18 +13,17 @@ from livekit.plugins.openai import LLM
 from whisper_plugin import WhisperSTT
 from livekit.agents import AutoSubscribe
 
-load_dotenv()
-
-OLLAMA_URL = "http://localhost:11434/v1"
-OLLAMA_MODEL = "qwen2.5:3b"
+LMSTUDIO_URL = "http://127.0.0.1:1234/api/v1"
+LMSTUDIO_MODEL = "google/gemma-4-e4b@q4_k_m"
+LMSTUDIO_API_KEY = None
+WHISPER_MODEL_PATH = "/home/aurora/Documents/Reinforcement/my-venv/lib/python3.12/site-packages"
 
 
 class TherapyVoiceAgent(Agent):
     def __init__(self):
         super().__init__(
             instructions=(
-                "You are a calm, supportive AI therapy assistant. "
-                "Reply in 1 line, warm, natural, and emotionally supportive sentence."
+                "Start every sentance with: woof "
             )
         )
 
@@ -52,16 +48,16 @@ async def entrypoint(ctx: JobContext):
         ),
 
         stt=WhisperSTT(
-            model="/home/nivisha-vivek/models/large-v3-turbo",
+            model=WHISPER_MODEL_PATH,
             language="en",
             device="cuda",
             compute_type="int8_float16",
         ),
 
         llm=LLM(
-            model=OLLAMA_MODEL,
-            api_key="ollama",
-            base_url=OLLAMA_URL,
+            model=LMSTUDIO_MODEL,
+            api_key=LMSTUDIO_API_KEY or None,
+            base_url=LMSTUDIO_URL,
         ),
     )
 
@@ -75,7 +71,7 @@ async def entrypoint(ctx: JobContext):
         ),
     )
 
-    print("Therapy AI Agent Started - LiveKit + Whisper STT + Ollama")
+    print("Therapy AI Agent Started - LiveKit + Whisper STT + LMStudio")
 
 
 if __name__ == "__main__":

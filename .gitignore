@@ -7,3 +7,4 @@ models/
 *.exe
 *.zip
 node_modules/
+.venv

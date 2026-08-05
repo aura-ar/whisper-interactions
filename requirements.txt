@@ -4,5 +4,5 @@ livekit-plugins-silero
 livekit-plugins-openai
 livekit-plugins-elevenlabs
 faster-whisper
-numpy
+numpy>=2.0.0,<2.1.0
 soundfile
