@@ -10,6 +10,8 @@ from livekit.agents import (
 from livekit.plugins import silero
 from livekit.plugins.openai import LLM
 
+#lms server start and livekit-server --dev
+
 from whisper_plugin import WhisperSTT
 from livekit.agents import AutoSubscribe
 
