@@ -1,5 +1,6 @@
 from livekit.agents import (
     Agent,
+    AgentServer,
     AgentSession,
     JobContext,
     WorkerOptions,
@@ -7,21 +8,38 @@ from livekit.agents import (
     room_io,
 )
 
+import os
+
+import httpx
+import openai
 from livekit.plugins import silero
 from livekit.plugins.openai import LLM
 
-#lms server start and livekit-server --dev
+# lms server start and lk agent dev --dev livekit_agent.py
 
 from whisper_plugin import WhisperSTT
 from livekit.agents import AutoSubscribe
 
-LMSTUDIO_URL = "http://127.0.0.1:1234/api/v1"
+LMSTUDIO_URL = "http://127.0.0.1:1234/v1"
 LMSTUDIO_MODEL = "google/gemma-4-e4b@q4_k_m"
-LMSTUDIO_API_KEY = None
-WHISPER_MODEL_PATH = "/home/aurora/Documents/Reinforcement/my-venv/lib/python3.12/site-packages"
+WHISPER_MODEL_PATH = "small"
+
+# default LiveKit websocket URL for local dev when LIVEKIT_URL not set
+os.environ.setdefault("LIVEKIT_URL", "ws://127.0.0.1:7880")
+
+openai_client = openai.AsyncClient(
+    base_url=LMSTUDIO_URL,
+    _enforce_credentials=False,
+    http_client=httpx.AsyncClient(timeout=httpx.Timeout(15.0, read=15.0)),
+)
+
+llm_client = LLM(
+    client=openai_client,
+    model=LMSTUDIO_MODEL,
+)
 
 
-class TherapyVoiceAgent(Agent):
+class SustainabilityVoiceAgent(Agent):
     def __init__(self):
         super().__init__(
             instructions=(
@@ -29,6 +47,15 @@ class TherapyVoiceAgent(Agent):
             )
         )
 
+
+server = AgentServer(
+    ws_url=os.environ.get("LIVEKIT_URL"),
+    api_key=os.environ.get("LIVEKIT_API_KEY"),
+    api_secret=os.environ.get("LIVEKIT_API_SECRET"),
+)
+
+
+@server.rtc_session(agent_name="sustainability_agent")
 async def entrypoint(ctx: JobContext):
 
     await ctx.connect(
@@ -56,16 +83,12 @@ async def entrypoint(ctx: JobContext):
             compute_type="int8_float16",
         ),
 
-        llm=LLM(
-            model=LMSTUDIO_MODEL,
-            api_key=LMSTUDIO_API_KEY or None,
-            base_url=LMSTUDIO_URL,
-        ),
+        llm=llm_client,
     )
 
     await session.start(
         room=ctx.room,
-        agent=TherapyVoiceAgent(),
+        agent=SustainabilityVoiceAgent(),
         room_options=room_io.RoomOptions(
             audio_input=True,
             audio_output=False,
@@ -73,7 +96,7 @@ async def entrypoint(ctx: JobContext):
         ),
     )
 
-    print("Therapy AI Agent Started - LiveKit + Whisper STT + LMStudio")
+    print("AI Agent Started - LiveKit + Whisper STT + LMStudio")
 
 
 if __name__ == "__main__":
