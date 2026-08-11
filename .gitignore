@@ -8,3 +8,6 @@ models/
 *.zip
 node_modules/
 .venv
+agents-playground
+package.json
+package-lock.json.bak
