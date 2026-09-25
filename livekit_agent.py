@@ -28,7 +28,7 @@ LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 
 LMSTUDIO_URL = "http://127.0.0.1:1234/v1"
 LMSTUDIO_MODEL = "google/gemma-4-e4b"
-WHISPER_MODEL_PATH = "small"
+WHISPER_MODEL_PATH = "medium.en"
 
 # default LiveKit websocket URL for local dev when LIVEKIT_URL not set
 # os.environ.setdefault("LIVEKIT_URL", "ws://127.0.0.1:7880")
@@ -69,7 +69,7 @@ server = AgentServer(
 )
 
 
-@server.rtc_session(agent_name="sustainability_agent")
+@server.rtc_session()
 async def entrypoint(ctx: JobContext):
 
     await ctx.connect(

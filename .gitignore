@@ -11,3 +11,6 @@ node_modules/
 agents-playground
 package.json
 package-lock.json.bak
+venv
+.python-version
+livekit
