@@ -10,6 +10,7 @@ from livekit.agents import (
 
 import os
 import asyncio
+import re
 import httpx
 import openai
 from livekit.plugins import silero
@@ -35,20 +36,46 @@ WHISPER_MODEL_PATH = "medium.en"
 ROBOT_BRIDGE_URL = "http://127.0.0.1:5000/speak"
 
 
-async def send_to_robot(text):
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                ROBOT_BRIDGE_URL,
-                json={"text": text}
-            )
+def split_ready_phrases(text):
+    phrases = []
 
-            response.raise_for_status()
+    while text:
+        punctuation_end = re.search(r"[.!?,;:][\"')\]]*\s+", text)
+        if not punctuation_end:
+            break
+        split_at = punctuation_end.end()
+
+        phrase = text[:split_at].strip()
+        if phrase:
+            phrases.append(phrase)
+        text = text[split_at:]
+
+    return phrases, text
+
+
+async def send_to_robot(text, client):
+    try:
+        response = await client.post(
+            ROBOT_BRIDGE_URL,
+            json={"text": text}
+        )
+
+        response.raise_for_status()
 
         print("Sent to robot:", text)
 
     except httpx.HTTPError as e:
         print("Failed to send text to robot:", e)
+
+
+async def send_robot_phrases(queue):
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        while True:
+            phrase = await queue.get()
+            try:
+                await send_to_robot(phrase, client)
+            finally:
+                queue.task_done()
 
 
 openai_client = openai.AsyncClient(
@@ -68,7 +95,8 @@ llm_client = LLM(
 # npm run dev
 
 class SustainabilityVoiceAgent(Agent):
-    def __init__(self):
+    def __init__(self, robot_queue):
+        self.robot_queue = robot_queue
         super().__init__(
             instructions=(
     "You are ARI, an extroverted robot barista running your own cafe. "
@@ -80,13 +108,36 @@ class SustainabilityVoiceAgent(Agent):
     "Then ask what they do in their free time. "
     "Then ask one follow-up question about their hobby. "
     "After their reply, transition naturally to asking if they have any weekend plans. "
-    "After their reply, transition naturally to: 'We have many sandwiches available today; the Onion Bhaji is most people's favourite today.' "
+    "After their reply, transition naturally to the sandwiches and end with: 'The Egg and Watercress is most people's favourite today.' "
     "If they ask about sandwiches, say: 'Details regarding ingredients can be found on my touchscreen! Let me know when you have decided which option you would like!' "
     "If they ask where the sandwiches are, say: 'The meat is on your left and vegetarian on your right, sorted by estimated sustainability just like the touchscreen.' "
     "Once they choose, thank them for coming and say goodbye. Remind them to book their slot for next week unless the conversation loops into repeated goodbyes, in which case simply bid them farewell without the reminder."
     "Do not use emotes or text formatting or gestures."
 )
         )
+
+    async def llm_node(self, chat_ctx, tools, model_settings):
+        buffered_text = ""
+
+        async for chunk in Agent.default.llm_node(
+            self, chat_ctx, tools, model_settings
+        ):
+            if isinstance(chunk, str):
+                text = chunk
+            else:
+                delta = getattr(chunk, "delta", None)
+                text = getattr(delta, "content", None)
+
+            if text:
+                buffered_text += text
+                phrases, buffered_text = split_ready_phrases(buffered_text)
+                for phrase in phrases:
+                    self.robot_queue.put_nowait(phrase)
+
+            yield chunk
+
+        if buffered_text.strip():
+            self.robot_queue.put_nowait(buffered_text.strip())
 
 
 load_dotenv(override=True)
@@ -133,32 +184,16 @@ async def entrypoint(ctx: JobContext):
         llm=llm_client,
     )
 
-    @session.on("conversation_item_added")
-    def on_conversation_item_added(event):
+    robot_queue = asyncio.Queue()
+    robot_sender_task = asyncio.create_task(send_robot_phrases(robot_queue))
 
-        item = event.item
-
-        if item.type != "message":
-            return
-
-        if item.role != "assistant":
-            return
-
-        if item.interrupted:
-            return
-
-        text = item.text_content
-
-        if not text or not text.strip():
-            return
-
-        print("LLM response:", text)
-
-        asyncio.create_task(send_to_robot(text))
+    @session.on("close")
+    def on_session_close(_event):
+        robot_sender_task.cancel()
 
     await session.start(
         room=ctx.room,
-        agent=SustainabilityVoiceAgent(),
+        agent=SustainabilityVoiceAgent(robot_queue),
         room_options=room_io.RoomOptions(
             audio_input=True,
             audio_output=False,
