@@ -43,6 +43,7 @@ WHISPER_MODEL_PATH = "medium.en"
 # os.environ.setdefault("LIVEKIT_URL", "ws://127.0.0.1:7880")
 
 ROBOT_BRIDGE_URL = "http://127.0.0.1:5000/speak"
+ROBOT_INTERRUPT_URL = "http://127.0.0.1:5000/interrupt"
 
 
 def split_ready_phrases(text):
@@ -94,6 +95,23 @@ async def send_robot_phrases(queue):
 
             finally:
                 queue.task_done()
+
+
+async def interrupt_robot(queue):
+    while True:
+        try:
+            queue.get_nowait()
+            queue.task_done()
+        except asyncio.QueueEmpty:
+            break
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(ROBOT_INTERRUPT_URL)
+            response.raise_for_status()
+            print("Robot speech interrupted")
+    except httpx.HTTPError as e:
+        print("Failed to interrupt robot speech:", e)
 
 
 openai_client = openai.AsyncClient(
@@ -221,6 +239,7 @@ async def entrypoint(ctx: JobContext):
     )
 
     session = AgentSession(
+        allow_interruptions=True,
         vad=silero.VAD.load(
             min_speech_duration=0.05,
             min_silence_duration=0.4,
@@ -237,6 +256,11 @@ async def entrypoint(ctx: JobContext):
     )
 
     robot_queue = asyncio.Queue()
+
+    @session.on("user_state_changed")
+    def on_user_state_changed(event):
+        if event.new_state == "speaking":
+            asyncio.create_task(interrupt_robot(robot_queue))
 
     robot_sender_task = asyncio.create_task(
         send_robot_phrases(robot_queue)
