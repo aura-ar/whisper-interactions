@@ -25,6 +25,11 @@ from livekit.plugins.openai import LLM
 
 from whisper_plugin import WhisperSTT
 from dotenv import load_dotenv
+from contextual_bandit import (
+    MAX_NUDGES,
+    ContextualCombinatorialThompsonSampling,
+    reward_for_attempt,
+)
 
 
 # lms server start and lk agent dev --dev livekit_agent.py
@@ -114,6 +119,16 @@ async def interrupt_robot(queue):
         print("Failed to interrupt robot speech:", e)
 
 
+def parse_sandwich_choice(text):
+    normalized = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    matches = [
+        sandwich
+        for sandwich in ("BLT", "Chicken", "Prawn")
+        if re.search(rf"\b{re.escape(sandwich.lower())}\b", normalized)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 openai_client = openai.AsyncClient(
     api_key="lm-studio",
     base_url=LMSTUDIO_URL,
@@ -126,6 +141,9 @@ llm_client = LLM(
     client=openai_client,
     model=LMSTUDIO_MODEL,
 )
+ccb_policy = ContextualCombinatorialThompsonSampling(
+    state_path=Path(__file__).resolve().parent / ".ccb_state.json"
+)
 
 # TURN ON LM STUDIO FIRST
 # livekit-server --config livekit.yaml
@@ -134,8 +152,20 @@ llm_client = LLM(
 
 
 class SustainabilityVoiceAgent(Agent):
-    def __init__(self, robot_queue):
+    def __init__(self, robot_queue, policy):
         self.robot_queue = robot_queue
+        self.policy = policy
+        self._awaiting_sandwich_transition = False
+        self._sandwich_flow_entered = False
+        self._ccb_active = False
+        self._ccb_attempt = 0
+        self._active_decision = None
+        self._previous_sandwich_choice = None
+        self._initial_sandwich_choice = None
+        self._used_nudges = set()
+        self._used_goals = set()
+        self._pending_policy_prompt = None
+        self._awaiting_final_confirmation = False
 
         super().__init__(
             instructions=(
@@ -175,11 +205,188 @@ class SustainabilityVoiceAgent(Agent):
             )
         )
 
+    def _select_nudge(self):
+        context = {
+            "stage": "sandwich_choice",
+            "attempt": self._ccb_attempt,
+            "previous_choice": self._previous_sandwich_choice,
+            "used_nudges": tuple(sorted(self._used_nudges)),
+            "used_goals": tuple(sorted(self._used_goals)),
+        }
+        excluded_goals = set(self._used_goals)
+        if self._previous_sandwich_choice:
+            excluded_goals.add(self._previous_sandwich_choice)
+        try:
+            self._active_decision = self.policy.select(
+                context,
+                excluded_nudges=tuple(self._used_nudges),
+                excluded_goals=tuple(excluded_goals),
+            )
+        except ValueError:
+            return False
+
+        action = self._active_decision.action
+        self._used_nudges.add(action.nudge_type)
+        self._used_goals.add(action.sandwich_goal)
+        strategy_guidance = {
+            "Social Influence": (
+                "Use social proof only if a verified fact is available; "
+                "never invent what other customers prefer."
+            ),
+            "Warning": (
+                "Mention only a verified, relevant trade-off; do not imply "
+                "danger or urgency."
+            ),
+            "Anchoring": (
+                "Frame the goal using a verified feature; do not invent "
+                "price or quality claims."
+            ),
+        }[action.nudge_type]
+
+        self._pending_policy_prompt = (
+            f"The participant's current sandwich choice is "
+            f"{self._previous_sandwich_choice}. Make nudge "
+            f"{self._ccb_attempt} of {MAX_NUDGES} toward "
+            f"{action.sandwich_goal}, using {action.nudge_type}: "
+            f"{strategy_guidance} Ask whether they would consider the "
+            "alternative. Keep it optional, respect their choice, and stop "
+            "if they decline."
+        )
+        return True
+
+    async def on_user_turn_completed(self, turn_ctx, new_message):
+        if self._awaiting_sandwich_transition and not self._sandwich_flow_entered:
+            self._awaiting_sandwich_transition = False
+            self._sandwich_flow_entered = True
+            self._pending_policy_prompt = (
+                "Transition to the sandwich menu and ask what the "
+                "participant would like. Do not recommend a specific "
+                "sandwich yet; this is their initial choice before any nudge."
+            )
+            return
+
+        if self._awaiting_final_confirmation:
+            self._awaiting_final_confirmation = False
+            self._pending_policy_prompt = (
+                "Thank the participant for confirming their sandwich choice "
+                "and say goodbye. Do not make another recommendation."
+            )
+            return
+
+        if self._sandwich_flow_entered and self._initial_sandwich_choice is None:
+            choice = parse_sandwich_choice(new_message.text_content or "")
+            if choice is None:
+                return
+
+            self._initial_sandwich_choice = choice
+            self._previous_sandwich_choice = choice
+            self._ccb_active = True
+            self._ccb_attempt = 1
+            self._used_nudges.clear()
+            self._used_goals.clear()
+            if not self._select_nudge():
+                self._ccb_active = False
+                self._awaiting_final_confirmation = True
+                self._pending_policy_prompt = (
+                    "No new recommendation is available without repeating "
+                    "a nudge or sandwich. Confirm the participant's original "
+                    f"choice, {choice}, and respect their answer."
+                )
+            return
+
+        if not self._ccb_active or self._active_decision is None:
+            return
+
+        text = new_message.text_content or ""
+        choice = parse_sandwich_choice(text)
+        decision = self._active_decision
+        refused = re.search(
+            r"\b(no thanks|not interested|i do not want|i don't want|"
+            r"keep my choice)\b",
+            text.lower(),
+        )
+
+        if refused:
+            self.policy.observe(
+                decision,
+                reward_for_attempt(
+                    switched_to_goal=False,
+                    attempt_number=self._ccb_attempt,
+                ),
+            )
+            if choice is not None and self._initial_sandwich_choice is None:
+                self._initial_sandwich_choice = choice
+            self._ccb_active = False
+            self._pending_policy_prompt = (
+                "Respect the participant's refusal, acknowledge their "
+                "choice, and end the conversation without another nudge."
+            )
+            return
+
+        if choice is None:
+            return
+
+        previous_choice = self._previous_sandwich_choice
+        switched_to_goal = (
+            previous_choice is not None
+            and choice != previous_choice
+            and choice == decision.action.sandwich_goal
+        )
+        reward = (
+            0.0
+            if previous_choice is None and choice == decision.action.sandwich_goal
+            else reward_for_attempt(
+                switched_to_goal=switched_to_goal,
+                attempt_number=self._ccb_attempt,
+            )
+        )
+        self.policy.observe(decision, reward)
+
+        if previous_choice is None:
+            self._initial_sandwich_choice = choice
+
+        if switched_to_goal or (
+            previous_choice is None and choice == decision.action.sandwich_goal
+        ):
+            self._ccb_active = False
+            return
+
+        self._previous_sandwich_choice = choice
+        if self._ccb_attempt >= MAX_NUDGES:
+            self._ccb_active = False
+            self._awaiting_final_confirmation = True
+            self._pending_policy_prompt = (
+                "Ask whether the participant still wants their original "
+                f"choice, {self._initial_sandwich_choice}. Do not make "
+                "another recommendation; wait for their answer."
+            )
+            return
+
+        self._ccb_attempt += 1
+        if not self._select_nudge():
+            self._ccb_active = False
+            self._awaiting_final_confirmation = True
+            self._pending_policy_prompt = (
+                "No new recommendation is available without repeating a "
+                "previous nudge or sandwich. Ask whether the participant "
+                f"still wants their original choice, {self._initial_sandwich_choice}, "
+                "then respect their answer."
+            )
+
     async def llm_node(self, chat_ctx, tools, model_settings):
         buffered_text = ""
+        assistant_text = ""
+        prompt_ctx = chat_ctx
+        if self._pending_policy_prompt:
+            prompt_ctx = chat_ctx.copy()
+            prompt_ctx.add_message(
+                role="system",
+                content=self._pending_policy_prompt,
+            )
+            self._pending_policy_prompt = None
 
         async for chunk in Agent.default.llm_node(
-            self, chat_ctx, tools, model_settings
+            self, prompt_ctx, tools, model_settings
         ):
             if isinstance(chunk, str):
                 text = chunk
@@ -189,6 +396,7 @@ class SustainabilityVoiceAgent(Agent):
                 text = getattr(delta, "content", None)
 
             if text:
+                assistant_text += text
                 buffered_text += text
 
                 phrases, buffered_text = split_ready_phrases(
@@ -204,6 +412,12 @@ class SustainabilityVoiceAgent(Agent):
             self.robot_queue.put_nowait(
                 buffered_text.strip()
             )
+
+        if (
+            not self._sandwich_flow_entered
+            and "weekend plan" in assistant_text.lower()
+        ):
+            self._awaiting_sandwich_transition = True
 
 
 print("LIVEKIT_URL =", repr(LIVEKIT_URL))
@@ -339,7 +553,7 @@ async def entrypoint(ctx: JobContext):
 
     await session.start(
         room=ctx.room,
-        agent=SustainabilityVoiceAgent(robot_queue),
+        agent=SustainabilityVoiceAgent(robot_queue, ccb_policy),
         room_options=room_io.RoomOptions(
             audio_input=True,
             audio_output=False,

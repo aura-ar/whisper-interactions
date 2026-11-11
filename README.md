@@ -21,6 +21,31 @@ User Speech
 → AI Text Response
 ```
 
+## Experimental CCB
+
+The project implements a factorized contextual combinatorial Thompson sampler
+in `contextual_bandit.py`. The agent first asks for the participant's initial
+sandwich choice. Before each follow-up nudge it selects one nudge and one
+sandwich goal as a joint action. Its posterior has separate context-dependent
+effects for each nudge, each goal, and their pair; the observed joint reward
+updates all three blocks. A switch to the selected goal is rewarded and ends
+the sequence immediately. Previously used nudges and goals, plus the
+participant's current choice, are excluded from later selections in that
+interaction.
+
+The sample action groups are Social Influence, Warning, and Anchoring; and
+BLT, Chicken, and Prawn. The provisional reward is `+1.0` when the participant
+switches to the selected goal after the first nudge, decreasing by `0.25` for
+each later successful attempt. An unsuccessful nudge receives `-0.25`; a
+choice that already matches the goal receives `0`. The learned posterior is
+stored locally in `.ccb_state.json`.
+
+This is a prototype: it recognizes sandwich choices by matching those sample
+names in the transcript and enters the flow after the agent asks about weekend
+plans. Replace the sample actions, context features, and transition detection
+when the menu and conversation design are finalized. Nudge wording is
+constrained not to invent social proof, warnings, or product claims.
+
 ## Technologies Used
 
 * Python
